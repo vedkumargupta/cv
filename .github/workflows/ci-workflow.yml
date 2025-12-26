@@ -9,20 +9,23 @@ on:
 jobs:
   build-test:
     name: Build and Test
-    runs-on: ubuntu-latest
+    # IMPORTANT: We use 20.04 because Ruby 2.7 is not fully supported on newer Ubuntu
+    runs-on: ubuntu-20.04 
     steps:
     - uses: actions/checkout@v4
+    
     - name: Set up Ruby
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: '2.7' # Must stay 2.7 for this specific theme
-        # We handle caching manually to avoid the v2/v3 error
+        ruby-version: '2.7'
+        # bundler-cache: true doesn't always work well with Ruby 2.7 + Gemspec
+        # so we handle it manually with the modern v4 cache action
     
     - name: Cache gems
-      uses: actions/cache@v4 # Updated to v4 to fix the deprecation error
+      uses: actions/cache@v4
       with:
         path: vendor/bundle
-        key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock') }}
+        key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock', '**/modern-resume-theme.gemspec') }}
         restore-keys: |
           ${{ runner.os }}-gems-
 
@@ -35,6 +38,7 @@ jobs:
       run: |
         bundle exec jekyll build --config _test/_config-version-1.yml --destination ./_test-site-1
         bundle exec jekyll build --config _test/_config-version-2.yml --destination ./_test-site-2
+    
     - name: Run tests
       run: |
         bundle exec htmlproofer ./_test-site-1 --disable-external
@@ -55,7 +59,7 @@ jobs:
 
   bump-version-deploy:
     name: Bump Version and Deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     needs: [ build-test, ci-skip ]
     if: github.ref == 'refs/heads/master' && github.repository_owner == 'sproogen' && needs.ci-skip.outputs.skip == 'false'
     permissions:
@@ -65,20 +69,25 @@ jobs:
       with:
         fetch-depth: 0
         token: ${{ secrets.ADMIN_TOKEN }}
+    
     - name: Set up Ruby
       uses: ruby/setup-ruby@v1
       with:
         ruby-version: '2.7'
+    
     - name: Install dependencies
       run: |
         bundle config path vendor/bundle
         bundle install --jobs 4 --retry 3
+    
     - name: Install gem-release
       run: gem install gem-release
+    
     - name: Set git config
       run: |
         git config user.name github-actions
         git config user.email github-actions@github.com
+    
     - name: Initialize workflow variables
       id: vars
       run: |
@@ -87,6 +96,7 @@ jobs:
         unset HAS_TAG
         if [ -n "$(git tag -l v$CURRENT_VERSION)" ]; then HAS_TAG='true'; fi
         echo "HAS_TAG=${HAS_TAG}" >> $GITHUB_OUTPUT
+    
     - name: Bump version if not manually bumped
       if: steps.vars.outputs.HAS_TAG
       run: |
@@ -95,16 +105,21 @@ jobs:
         sed -i -e "s/modern-resume-theme (${{ steps.vars.outputs.CURRENT_VERSION }})/modern-resume-theme (${NEW_VERSION})/g" ./Gemfile.lock
         git add Gemfile.lock
         git commit --amend --no-edit
+    
     - name: Tag latest version
       run: gem tag --no-push
+    
     - run: git push origin HEAD:${{ github.ref }} --tags
+    
     - name: Build Gem
       run: gem build modern-resume-theme.gemspec
+    
     - name: Get Release Version
       id: release_version
       run: |
         RELEASE_VERSION=$(gem bump --pretend --no-commit | awk '{ print $3 }')
         echo "RELEASE_VERSION=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+    
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
