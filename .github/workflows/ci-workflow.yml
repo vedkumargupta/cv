@@ -9,42 +9,29 @@ on:
 jobs:
   build-test:
     name: Build and Test
-    # Ubuntu 20.04 is required for stable Ruby 2.7 support
-    runs-on: ubuntu-20.04
-    timeout-minutes: 10 # Safety switch: stop the build if it hangs again
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-
+    - uses: actions/checkout@v3
     - name: Set up Ruby
+    # To automatically get bug fixes and new Ruby versions for ruby/setup-ruby,
+    # change this to (see https://github.com/ruby/setup-ruby#versioning):
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: '2.7'
-        # We handle caching manually below to avoid resolver loops
-
-    - name: Force Resolver Stability
-      run: |
-        gem install bundler -v 2.4.22
-        bundle config set --local path 'vendor/bundle'
-        # Force the lockfile to recognize the current Linux environment
-        bundle lock --add-platform x86_64-linux
-
-    - name: Cache gems
-      uses: actions/cache@v4
+        ruby-version: 2.6
+    - uses: actions/cache@v2
       with:
         path: vendor/bundle
         key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock') }}
         restore-keys: |
           ${{ runner.os }}-gems-
-
     - name: Install dependencies
       run: |
+        bundle config path vendor/bundle
         bundle install --jobs 4 --retry 3
-
     - name: Built test sites
       run: |
         bundle exec jekyll build --config _test/_config-version-1.yml --destination ./_test-site-1
         bundle exec jekyll build --config _test/_config-version-2.yml --destination ./_test-site-2
-    
     - name: Run tests
       run: |
         bundle exec htmlproofer ./_test-site-1 --disable-external
@@ -55,7 +42,7 @@ jobs:
     outputs:
       skip: ${{ steps.ci-skip-step.outputs.ci-skip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v2
         with:
           fetch-depth: 0
       - id: ci-skip-step
@@ -65,48 +52,44 @@ jobs:
 
   bump-version-deploy:
     name: Bump Version and Deploy
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     needs: [ build-test, ci-skip ]
     if: github.ref == 'refs/heads/master' && github.repository_owner == 'sproogen' && needs.ci-skip.outputs.skip == 'false'
-    permissions:
-      contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v2
       with:
         fetch-depth: 0
         token: ${{ secrets.ADMIN_TOKEN }}
-    
     - name: Set up Ruby
+    # To automatically get bug fixes and new Ruby versions for ruby/setup-ruby,
+    # change this to (see https://github.com/ruby/setup-ruby#versioning):
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: '2.7'
-
-    - name: Force Resolver Stability
-      run: |
-        gem install bundler -v 2.4.22
-        bundle config set --local path 'vendor/bundle'
-        bundle lock --add-platform x86_64-linux
-    
+        ruby-version: 2.6
+    - uses: actions/cache@v2
+      with:
+        path: vendor/bundle
+        key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-gems-
     - name: Install dependencies
-      run: bundle install --jobs 4 --retry 3
-    
+      run: |
+        bundle config path vendor/bundle
+        bundle install --jobs 4 --retry 3
     - name: Install gem-release
       run: gem install gem-release
-    
     - name: Set git config
       run: |
         git config user.name github-actions
         git config user.email github-actions@github.com
-    
     - name: Initialize workflow variables
       id: vars
       run: |
         CURRENT_VERSION=$(gem bump --pretend --no-commit | awk '{ print $3 }')
-        echo "CURRENT_VERSION=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+        echo ::set-output name=CURRENT_VERSION::${CURRENT_VERSION}
         unset HAS_TAG
         if [ -n "$(git tag -l v$CURRENT_VERSION)" ]; then HAS_TAG='true'; fi
-        echo "HAS_TAG=${HAS_TAG}" >> $GITHUB_OUTPUT
-    
+        echo ::set-output name=HAS_TAG::${HAS_TAG}
     - name: Bump version if not manually bumped
       if: steps.vars.outputs.HAS_TAG
       run: |
@@ -115,26 +98,49 @@ jobs:
         sed -i -e "s/modern-resume-theme (${{ steps.vars.outputs.CURRENT_VERSION }})/modern-resume-theme (${NEW_VERSION})/g" ./Gemfile.lock
         git add Gemfile.lock
         git commit --amend --no-edit
-    
     - name: Tag latest version
       run: gem tag --no-push
-    
     - run: git push origin HEAD:${{ github.ref }} --tags
-    
     - name: Build Gem
       run: gem build modern-resume-theme.gemspec
-    
     - name: Get Release Version
       id: release_version
       run: |
         RELEASE_VERSION=$(gem bump --pretend --no-commit | awk '{ print $3 }')
-        echo "RELEASE_VERSION=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
-    
+        echo ::set-output name=RELEASE_VERSION::${RELEASE_VERSION}
     - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.release_version.outputs.RELEASE_VERSION }}
+        release_name: v${{ steps.release_version.outputs.RELEASE_VERSION }}
+        draft: false
+        prerelease: false
+    - name: Upload Release Asset
+      id: upload-release-asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem
+        asset_name: modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem
+        asset_content_type: application/octet-stream
+    - name: Create gem credentials
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
       run: |
-        gh release create v${{ steps.release_version.outputs.RELEASE_VERSION }} \
-          ./modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem \
-          --title "v${{ steps.release_version.outputs.RELEASE_VERSION }}" \
-          --notes "Automated release"
+        cat << EOF > ~/.gem/credentials
+        ---
+        :github: Bearer ${GITHUB_TOKEN}
+        :rubygems_api_key: ${RUBYGEMS_API_KEY}
+        EOF
+
+        chmod 0600 ~/.gem/credentials
+    - name: Publish Gem to GitHub Packages
+      run: gem push --key github --host https://rubygems.pkg.github.com/sproogen modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem
+    - name: Publish Gem to Rubygems
+      run: gem push modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem
