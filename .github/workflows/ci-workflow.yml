@@ -15,10 +15,23 @@ jobs:
     - name: Set up Ruby
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: '3.1'      # Ruby 2.6/2.7 cause Exit Code 5; 3.1 is stable
-        bundler-cache: true      # Automatically replaces actions/cache@v2
+        ruby-version: '2.7' # Must stay 2.7 for this specific theme
+        # We handle caching manually to avoid the v2/v3 error
+    
+    - name: Cache gems
+      uses: actions/cache@v4 # Updated to v4 to fix the deprecation error
+      with:
+        path: vendor/bundle
+        key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-gems-
 
-    - name: Build test sites
+    - name: Install dependencies
+      run: |
+        bundle config path vendor/bundle
+        bundle install --jobs 4 --retry 3
+
+    - name: Built test sites
       run: |
         bundle exec jekyll build --config _test/_config-version-1.yml --destination ./_test-site-1
         bundle exec jekyll build --config _test/_config-version-2.yml --destination ./_test-site-2
@@ -46,8 +59,7 @@ jobs:
     needs: [ build-test, ci-skip ]
     if: github.ref == 'refs/heads/master' && github.repository_owner == 'sproogen' && needs.ci-skip.outputs.skip == 'false'
     permissions:
-      contents: write   # Required for releases/tags
-      packages: write   # Required for GitHub Packages
+      contents: write
     steps:
     - uses: actions/checkout@v4
       with:
@@ -56,8 +68,11 @@ jobs:
     - name: Set up Ruby
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: '3.1'
-        bundler-cache: true
+        ruby-version: '2.7'
+    - name: Install dependencies
+      run: |
+        bundle config path vendor/bundle
+        bundle install --jobs 4 --retry 3
     - name: Install gem-release
       run: gem install gem-release
     - name: Set git config
@@ -90,8 +105,6 @@ jobs:
       run: |
         RELEASE_VERSION=$(gem bump --pretend --no-commit | awk '{ print $3 }')
         echo "RELEASE_VERSION=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
-    
-    # Using 'gh' (GitHub CLI) which is the modern standard for releases
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,21 +112,4 @@ jobs:
         gh release create v${{ steps.release_version.outputs.RELEASE_VERSION }} \
           ./modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem \
           --title "v${{ steps.release_version.outputs.RELEASE_VERSION }}" \
-          --notes "Automated version bump and release."
-
-    - name: Create gem credentials
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
-      run: |
-        mkdir -p ~/.gem
-        cat << EOF > ~/.gem/credentials
-        ---
-        :github: Bearer ${GITHUB_TOKEN}
-        :rubygems_api_key: ${RUBYGEMS_API_KEY}
-        EOF
-        chmod 0600 ~/.gem/credentials
-    - name: Publish Gem to GitHub Packages
-      run: gem push --key github --host https://rubygems.pkg.github.com/sproogen modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem
-    - name: Publish Gem to Rubygems
-      run: gem push modern-resume-theme-${{ steps.release_version.outputs.RELEASE_VERSION }}.gem
+          --notes "Automated release"
