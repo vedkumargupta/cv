@@ -9,29 +9,35 @@ on:
 jobs:
   build-test:
     name: Build and Test
-    # IMPORTANT: We use 20.04 because Ruby 2.7 is not fully supported on newer Ubuntu
-    runs-on: ubuntu-20.04 
+    # Ubuntu 20.04 is required for stable Ruby 2.7 support
+    runs-on: ubuntu-20.04
+    timeout-minutes: 10 # Safety switch: stop the build if it hangs again
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Ruby
       uses: ruby/setup-ruby@v1
       with:
         ruby-version: '2.7'
-        # bundler-cache: true doesn't always work well with Ruby 2.7 + Gemspec
-        # so we handle it manually with the modern v4 cache action
-    
+        # We handle caching manually below to avoid resolver loops
+
+    - name: Force Resolver Stability
+      run: |
+        gem install bundler -v 2.4.22
+        bundle config set --local path 'vendor/bundle'
+        # Force the lockfile to recognize the current Linux environment
+        bundle lock --add-platform x86_64-linux
+
     - name: Cache gems
       uses: actions/cache@v4
       with:
         path: vendor/bundle
-        key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock', '**/modern-resume-theme.gemspec') }}
+        key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock') }}
         restore-keys: |
           ${{ runner.os }}-gems-
 
     - name: Install dependencies
       run: |
-        bundle config path vendor/bundle
         bundle install --jobs 4 --retry 3
 
     - name: Built test sites
@@ -74,11 +80,15 @@ jobs:
       uses: ruby/setup-ruby@v1
       with:
         ruby-version: '2.7'
+
+    - name: Force Resolver Stability
+      run: |
+        gem install bundler -v 2.4.22
+        bundle config set --local path 'vendor/bundle'
+        bundle lock --add-platform x86_64-linux
     
     - name: Install dependencies
-      run: |
-        bundle config path vendor/bundle
-        bundle install --jobs 4 --retry 3
+      run: bundle install --jobs 4 --retry 3
     
     - name: Install gem-release
       run: gem install gem-release
